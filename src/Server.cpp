@@ -19,6 +19,7 @@ int main(int argc, char **argv) {
   // Uncomment this block to pass the first stage
   //
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  ssize_t n;
   if (server_fd < 0) {
    std::cerr << "Failed to create server socket\n";
    return 1;
@@ -55,6 +56,8 @@ int main(int argc, char **argv) {
   
   accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   std::cout << "Client connected\n";
+
+  n = write(server_fd,"+PONG\r\n",18);
   
   close(server_fd);
 
