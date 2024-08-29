@@ -60,14 +60,14 @@ int main(int argc, char **argv)
   int client_addr_len = sizeof(client_addr);
 
   std::cout << "Waiting for a client to connect...\n";
-
-  newserver_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
-  std::cout << "Client connected\n";
-  bzero(buffer,256);
-  n = read(newserver_fd, buffer, 255);
-  n = write(newserver_fd, "+PONG\r\n", 7);
-
-  close(newserver_fd);
-  close(server_fd);
-  return 0;
+  while (true){
+    newserver_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    std::cout << "Client connected\n";
+    bzero(buffer,256);
+    n = read(newserver_fd, buffer, 255);
+    n = write(newserver_fd, "+PONG\r\n", 7);
+  }
+    close(newserver_fd);
+    close(server_fd);
+    return 0;
 }
