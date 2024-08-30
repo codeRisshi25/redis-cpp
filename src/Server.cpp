@@ -7,7 +7,10 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <thread>
+#include <vector>
 
+void client_res(int);
 int main(int argc, char **argv)
 {
   // Flush after every std::cout / std::cerr
@@ -21,8 +24,7 @@ int main(int argc, char **argv)
   //
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   int newserver_fd;
-  char buffer[256];
-  int n;
+  std::vector<std::thread> threads;
   if (server_fd < 0)
   {
     std::cerr << "Failed to create server socket\n";
@@ -60,16 +62,44 @@ int main(int argc, char **argv)
   int client_addr_len = sizeof(client_addr);
 
   std::cout << "Waiting for a client to connect...\n";
-  newserver_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
-  std::cout << "Client connected\n";
-  while (1)
+  while (true)
   {
-    bzero(buffer, 256);
-    n = read(newserver_fd, buffer, 255);
-    n = write(newserver_fd, "+PONG\r\n", 7);
-    if (n < 0) break; 
+    newserver_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    if (newserver_fd < 0)
+    {
+      std::cerr << "ERROR on accept\n";
+      continue;
+    }
+    std::cout << "Client connected\n";
+    threads.emplace_back(std::thread(client_res, newserver_fd));
+    threads.back().detach();
   }
-  close(newserver_fd);
   close(server_fd);
   return 0;
+}
+
+void client_res(int sock) {
+    char buffer[512];
+    while (true) {
+        bzero(buffer, 512);
+        int n = read(sock, buffer, 511); // Read up to 511 bytes to leave space for null terminator
+        if (n < 0) {
+            std::cerr << "ERROR reading from socket\n";
+            close(sock);
+            return;
+        }
+        if (n == 0) {
+            std::cout << "Client disconnected\n";
+            close(sock);
+            return;
+        }
+        std::cout << "Here is the message: " << buffer << std::endl;
+
+        n = write(sock, "+PONG\r\n", 7);
+        if (n < 0) {
+            std::cerr << "ERROR writing to socket\n";
+            close(sock);
+            return;
+        }
+    }
 }
