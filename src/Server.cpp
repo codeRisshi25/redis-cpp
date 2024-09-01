@@ -9,10 +9,12 @@
 #include <netdb.h>
 #include <thread>
 #include <vector>
+#include <unordered_map>
 
+// RESP Parser Structure
 struct RESPData
 {
-  enum Typeh
+  enum Type
   {
     SIMPLE_STRING,
     // ERROR,
@@ -27,8 +29,10 @@ struct RESPData
   std::vector<RESPData> array;
 };
 
+// Advance declaration for parseRESP
 RESPData parseRESP(const std::string &buffer, size_t &pos);
 
+// Simple String Parser
 std::string parseSimpleString(const std::string &buffer, size_t &pos)
 {
   size_t end = buffer.find("\r\n", pos);
@@ -37,6 +41,7 @@ std::string parseSimpleString(const std::string &buffer, size_t &pos)
   return result;
 };
 
+// Bulk String Parser
 std::string parseBulkString(const std::string &buffer, size_t &pos)
 {
   size_t end = buffer.find("\r\n", pos);
@@ -47,6 +52,7 @@ std::string parseBulkString(const std::string &buffer, size_t &pos)
   return result;
 };
 
+// Array Parser
 std::vector<RESPData> parseArray(const std::string &buffer, size_t pos)
 {
   size_t end = buffer.find("\r\n", pos);
@@ -60,10 +66,11 @@ std::vector<RESPData> parseArray(const std::string &buffer, size_t pos)
   return result;
 };
 
+// Check for the first byte and determine data type and then call appropriate parsers
 RESPData parseRESP(const std::string &buffer, size_t &pos)
 {
   RESPData data;
-  char type = buffer[pos++];
+  char type = buffer[pos++]; // get datatype
   switch (type)
   {
   case '+':
@@ -85,6 +92,7 @@ RESPData parseRESP(const std::string &buffer, size_t &pos)
   return data;
 }
 
+// Parser for Arrays ***imp
 std::vector<RESPData> client_parser(const std::string &str)
 {
   size_t pos = 0;
@@ -95,9 +103,110 @@ std::vector<RESPData> client_parser(const std::string &str)
   }
   return {};
 }
+// Define the map for storing key-value pairs
+std::unordered_map<std::string, std::string> keyValueStore;
 
-void client_res(int);
+// Enumeration for all the available commands
+enum CommandType
+{
+  PING,
+  ECHO,
+  GET,
+  SET,
+  UNKNOWN
+};
 
+// Function to map string commands to enumeration values
+CommandType getCommandType(const std::string &command)
+{
+  static const std::unordered_map<std::string, CommandType> commandMap = {
+      {"PING", PING},
+      {"ECHO", ECHO},
+      {"GET", GET},
+      {"SET", SET}};
+
+  auto it = commandMap.find(command);
+  if (it != commandMap.end())
+  {
+    return it->second;
+  }
+  return UNKNOWN;
+}
+
+void clientHandle(int sock)
+{
+  char buffer[512];
+  while (true)
+  {
+    bzero(buffer, 512);
+    int n = read(sock, buffer, 511);
+    if (n < 0)
+    {
+      std::cerr << "Error reading from socket\n";
+      close(sock);
+      return;
+    }
+    if (n == 0)
+    {
+      std::cout << "Client disconnected\n";
+      close(sock);
+      return;
+    }
+
+    // calls for the RESP Pareser
+    std::string str = buffer;
+    std::vector<RESPData> result = client_parser(buffer);
+    std::vector<std::string> commands;
+
+    for (const auto &element : result)
+    {
+      if (element.type == RESPData::BULK_STRING)
+      {
+        commands.push_back(element.bulkString);
+      }
+    }
+    int cnt = 0;
+    while (cnt < commands.size())
+    {
+      CommandType commandType = getCommandType(commands[cnt]);
+      std::string response;
+      std::string key;
+      std::string value;
+      switch (commandType)
+      {
+      case PING:
+        n = write(sock, "+PONG\r\n", 7);
+        cnt++;
+        break;
+      case ECHO:
+        response = "+" + commands[cnt + 1] + "\r\n";
+        n = write(sock, response.c_str(), response.length());
+        cnt += 2;
+        break;
+      case SET:
+        key = commands[cnt + 1];
+        value = commands[cnt + 2];
+        keyValueStore[key] = value;
+        response = "+OK\r\n";
+        n = write(sock, response.c_str(), response.length());
+        cnt += 3;
+        break;
+      case GET:
+        key = commands[cnt+1];
+        value = keyValueStore[key];
+        response = "+"+value+"\r\n";
+        n = write(sock,response.c_str(),response.length());
+        cnt += 3;
+        break;
+      default :
+        cnt++;
+        break;
+      }
+    }
+  }
+};
+// main function to start the server and wait for connections
+// spawn threads
 int main(int argc, char **argv)
 {
   // Flush after every std::cout / std::cerr
@@ -158,56 +267,9 @@ int main(int argc, char **argv)
       continue;
     }
     std::cout << "Client connected\n";
-    std::thread t(client_res, newserver_fd);  // Pass newserver_fd to the thread
-    t.detach(); 
+    std::thread t(clientHandle, newserver_fd); // Pass newserver_fd to the thread
+    t.detach();
   }
   close(server_fd);
   return 0;
-}
-
-void client_res(int sock)
-{
-  char buffer[512];
-  while (true)
-  {
-    bzero(buffer, 512);
-    int n = read(sock, buffer, 511);
-    if (n < 0)
-    {
-      std::cerr << "Error reading from socket\n";
-      close(sock);
-      return;
-    }
-    if (n == 0)
-    {
-      std::cout << "Client disconnected\n";
-      close(sock);
-      return;
-    }
-    std::string str = buffer;
-    std::vector<RESPData> result = client_parser(buffer);
-    std::vector<std::string> commands;
-    for (const auto &element : result)
-    {
-      if (element.type == RESPData::BULK_STRING)
-      {
-        commands.push_back(element.bulkString);
-      }
-    }
-    int cnt = 0;
-    while (cnt < commands.size())
-    {
-      if (commands[cnt] == "PING")
-      {
-        n = write(sock, "+PONG\r\n", 7);
-        cnt++;
-      }
-      else if (commands[cnt] == "ECHO")
-      {
-        std::string response = "+" + commands[cnt + 1] + "\r\n";
-        n = write(sock, response.c_str(), response.length());
-        cnt += 2;
-      }
-    }
-  }
 }
