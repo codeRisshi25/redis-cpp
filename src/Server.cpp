@@ -10,7 +10,94 @@
 #include <thread>
 #include <vector>
 
+struct RESPData
+{
+  enum Typeh
+  {
+    SIMPLE_STRING,
+    // ERROR,
+    // INTEGER,
+    BULK_STRING,
+    ARRAY
+  } type;
+  std::string simpleString;
+  // std::string error;
+  // int integer;
+  std::string bulkString;
+  std::vector<RESPData> array;
+};
+
+RESPData parseRESP(const std::string &buffer, size_t &pos);
+
+std::string parseSimpleString(const std::string &buffer, size_t &pos)
+{
+  size_t end = buffer.find("\r\n", pos);
+  std::string result = buffer.substr(pos, end - pos);
+  pos = end + 2;
+  return result;
+};
+
+std::string parseBulkString(const std::string &buffer, size_t &pos)
+{
+  size_t end = buffer.find("\r\n", pos);
+  int length = std::stoi(buffer.substr(pos, end - pos));
+  pos = end + 2;
+  std::string result = buffer.substr(pos, length);
+  pos += length + 2;
+  return result;
+};
+
+std::vector<RESPData> parseArray(const std::string &buffer, size_t pos)
+{
+  size_t end = buffer.find("\r\n", pos);
+  int numElements = std::stoi(buffer.substr(pos, end - pos));
+  pos = end + 2;
+  std::vector<RESPData> result;
+  for (int i = 0; i < numElements; ++i)
+  {
+    result.push_back(parseRESP(buffer, pos));
+  };
+  return result;
+};
+
+RESPData parseRESP(const std::string &buffer, size_t &pos)
+{
+  RESPData data;
+  char type = buffer[pos++];
+  switch (type)
+  {
+  case '+':
+    data.type = RESPData::SIMPLE_STRING;
+    data.simpleString = parseSimpleString(buffer, pos);
+    break;
+
+  case '$':
+    data.type = RESPData::BULK_STRING;
+    data.bulkString = parseBulkString(buffer, pos);
+    break;
+  case '*':
+    data.type = RESPData::ARRAY;
+    data.array = parseArray(buffer, pos);
+    break;
+  default:
+    throw std::runtime_error("Unkown RESP Datatype");
+  }
+  return data;
+}
+
+std::vector<RESPData> client_parser(const std::string &str)
+{
+  size_t pos = 0;
+  RESPData data = parseRESP(str, pos);
+  if (data.type == RESPData::ARRAY)
+  {
+    return data.array;
+  }
+  return {};
+}
+
 void client_res(int);
+
 int main(int argc, char **argv)
 {
   // Flush after every std::cout / std::cerr
@@ -71,35 +158,56 @@ int main(int argc, char **argv)
       continue;
     }
     std::cout << "Client connected\n";
-    threads.emplace_back(std::thread(client_res, newserver_fd));
-    threads.back().detach();
+    std::thread t(client_res, newserver_fd);  // Pass newserver_fd to the thread
+    t.detach(); 
   }
   close(server_fd);
   return 0;
 }
 
-void client_res(int sock) {
-    char buffer[512];
-    while (true) {
-        bzero(buffer, 512);
-        int n = read(sock, buffer, 511); // Read up to 511 bytes to leave space for null terminator
-        if (n < 0) {
-            std::cerr << "ERROR reading from socket\n";
-            close(sock);
-            return;
-        }
-        if (n == 0) {
-            std::cout << "Client disconnected\n";
-            close(sock);
-            return;
-        }
-        std::cout << "Here is the message: " << buffer << std::endl;
-
-        n = write(sock, "+PONG\r\n", 7);
-        if (n < 0) {
-            std::cerr << "ERROR writing to socket\n";
-            close(sock);
-            return;
-        }
+void client_res(int sock)
+{
+  char buffer[512];
+  while (true)
+  {
+    bzero(buffer, 512);
+    int n = read(sock, buffer, 511);
+    if (n < 0)
+    {
+      std::cerr << "Error reading from socket\n";
+      close(sock);
+      return;
     }
+    if (n == 0)
+    {
+      std::cout << "Client disconnected\n";
+      close(sock);
+      return;
+    }
+    std::string str = buffer;
+    std::vector<RESPData> result = client_parser(buffer);
+    std::vector<std::string> commands;
+    for (const auto &element : result)
+    {
+      if (element.type == RESPData::BULK_STRING)
+      {
+        commands.push_back(element.bulkString);
+      }
+    }
+    int cnt = 0;
+    while (cnt < commands.size())
+    {
+      if (commands[cnt] == "PING")
+      {
+        n = write(sock, "+PONG\r\n", 7);
+        cnt++;
+      }
+      else if (commands[cnt] == "ECHO")
+      {
+        std::string response = "+" + commands[cnt + 1] + "\r\n";
+        n = write(sock, response.c_str(), response.length());
+        cnt += 2;
+      }
+    }
+  }
 }
