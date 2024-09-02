@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <unordered_map>
+#include <chrono>
 
 // RESP Parser Structure
 struct RESPData
@@ -17,6 +18,7 @@ struct RESPData
   enum Type
   {
     SIMPLE_STRING,
+    // todo
     // ERROR,
     // INTEGER,
     BULK_STRING,
@@ -29,6 +31,12 @@ struct RESPData
   std::vector<RESPData> array;
 };
 
+struct ValueData
+{
+  std::string value;
+  int expiry;
+  std::chrono::time_point<std::chrono::steady_clock> timestamp;
+};
 // Advance declaration for parseRESP
 RESPData parseRESP(const std::string &buffer, size_t &pos);
 
@@ -66,7 +74,7 @@ std::vector<RESPData> parseArray(const std::string &buffer, size_t pos)
   return result;
 };
 
-// Check for the first byte and determine data type and then call appropriate parsers
+//* Check for the first byte and determine data type and then call appropriate parsers
 RESPData parseRESP(const std::string &buffer, size_t &pos)
 {
   RESPData data;
@@ -104,7 +112,7 @@ std::vector<RESPData> client_parser(const std::string &str)
   return {};
 }
 // Define the map for storing key-value pairs
-std::unordered_map<std::string, std::string> keyValueStore;
+std::unordered_map<std::string, ValueData> keyValueStore;
 
 // Enumeration for all the available commands
 enum CommandType
@@ -113,6 +121,7 @@ enum CommandType
   ECHO,
   GET,
   SET,
+  px,
   UNKNOWN
 };
 
@@ -123,7 +132,9 @@ CommandType getCommandType(const std::string &command)
       {"PING", PING},
       {"ECHO", ECHO},
       {"GET", GET},
-      {"SET", SET}};
+      {"SET", SET},
+      {"px", px},
+  };
 
   auto it = commandMap.find(command);
   if (it != commandMap.end())
@@ -133,6 +144,7 @@ CommandType getCommandType(const std::string &command)
   return UNKNOWN;
 }
 
+//* The Main thread functions that handles concurrent users
 void clientHandle(int sock)
 {
   char buffer[512];
@@ -153,7 +165,7 @@ void clientHandle(int sock)
       return;
     }
 
-    // calls for the RESP Pareser
+    //! calls for the RESP Pareser
     std::string str = buffer;
     std::vector<RESPData> result = client_parser(buffer);
     std::vector<std::string> commands;
@@ -172,6 +184,7 @@ void clientHandle(int sock)
       std::string response;
       std::string key;
       std::string value;
+      int exp;
       switch (commandType)
       {
       case PING:
@@ -184,23 +197,60 @@ void clientHandle(int sock)
         cnt += 2;
         break;
       case SET:
+      {
         key = commands[cnt + 1];
         value = commands[cnt + 2];
-        keyValueStore[key] = value;
+        if (cnt + 3 < commands.size() && commands[cnt + 3] == "px")
+        {
+          exp = std::stoi(commands[cnt + 4]);
+          keyValueStore[key].expiry = exp;
+          keyValueStore[key].timestamp = std::chrono::steady_clock::now();
+          cnt += 5;
+        }
+        else
+        {
+          keyValueStore[key].expiry = -1; // No expiration time
+          cnt += 3;
+        }
+        keyValueStore[key].value = value;
         response = "+OK\r\n";
         n = write(sock, response.c_str(), response.length());
-        cnt += 3;
         break;
+      }
       case GET:
-        key = commands[cnt+1];
-        value = keyValueStore[key];
-        response = "+"+value+"\r\n";
-        n = write(sock,response.c_str(),response.length());
-        cnt += 3;
+      {
+        auto end = std::chrono::steady_clock::now();
+        key = commands[cnt + 1];
+
+        // Check if the key exists
+        if (keyValueStore.count(key) == 0)
+        {
+          n = write(sock, "$-1\r\n", 5); // Send null bulk string for non-existent key
+          cnt += 2;                      // Move past the GET and key commands
+          break;
+        }
+
+        // Calculate the duration since the key was set
+        auto start = keyValueStore[key].timestamp;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        exp = keyValueStore[key].expiry;
+
+        // Check if the key has expired
+        if (exp > 0 && duration.count() > exp)
+        {
+          keyValueStore.erase(key);      // Remove expired key
+          n = write(sock, "$-1\r\n", 5); // Send null bulk string for expired key
+          cnt += 2;                      // Move past the GET and key commands
+          break;
+        }
+
+        // Key is valid, return the value
+        value = keyValueStore[key].value;
+        response = "+" + value + "\r\n";
+        n = write(sock, response.c_str(), response.length());
+        cnt += 2; // Move past the GET and key commands
         break;
-      default :
-        cnt++;
-        break;
+      }
       }
     }
   }

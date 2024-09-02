@@ -86,5 +86,6 @@
         "typeinfo": "cpp",
         "valarray": "cpp",
         "variant": "cpp"
-    }
+    },
+    "better-comments.highlightPlainText": true
 }
