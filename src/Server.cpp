@@ -31,14 +31,29 @@ struct RESPData
   std::vector<RESPData> array;
 };
 
+//* Structure for the KeyValueStores
 struct ValueData
 {
   std::string value;
   int expiry;
   std::chrono::time_point<std::chrono::steady_clock> timestamp;
 };
+
+//*Structure for CONFIG
+struct Config
+{
+  std::string dir;
+  std::string dbfilename;
+  Config(std::string dir,
+         std::string dbfilename)
+  {
+    this->dir = dir;
+    this->dbfilename = dbfilename;
+  };
+};
 // Advance declaration for parseRESP
-RESPData parseRESP(const std::string &buffer, size_t &pos);
+RESPData
+parseRESP(const std::string &buffer, size_t &pos);
 
 // Simple String Parser
 std::string parseSimpleString(const std::string &buffer, size_t &pos)
@@ -121,6 +136,7 @@ enum CommandType
   ECHO,
   GET,
   SET,
+  CONFIG,
   px,
   UNKNOWN
 };
@@ -133,6 +149,7 @@ CommandType getCommandType(const std::string &command)
       {"ECHO", ECHO},
       {"GET", GET},
       {"SET", SET},
+      {"CONFIG", CONFIG},
       {"px", px},
   };
 
@@ -144,8 +161,7 @@ CommandType getCommandType(const std::string &command)
   return UNKNOWN;
 }
 
-//* The Main thread functions that handles concurrent users
-void clientHandle(int sock)
+void clientHandle(int sock, Config config)
 {
   char buffer[512];
   while (true)
@@ -243,7 +259,6 @@ void clientHandle(int sock)
           cnt += 2;                      // Move past the GET and key commands
           break;
         }
-
         // Key is valid, return the value
         value = keyValueStore[key].value;
         response = "+" + value + "\r\n";
@@ -251,6 +266,13 @@ void clientHandle(int sock)
         cnt += 2; // Move past the GET and key commands
         break;
       }
+      case CONFIG:
+        if (commands[cnt + 1] == "GET")
+          cnt += 2;
+        response = commands[cnt] == "dir" ? "*2\r\n$3\r\ndir\r\n$" + std::to_string(config.dir.length()) + "\r\n"+ config.dir + "\r\n" : "*2\r\n$10\r\ndbfilename\r\n$" + std::to_string(config.dbfilename.length()) + "\r\n" + config.dbfilename + "\r\n";
+        n = write(sock,response.c_str(),response.length());
+        cnt+=2;
+        break;
       }
     }
   }
@@ -265,9 +287,8 @@ int main(int argc, char **argv)
 
   // You can use print statements as follows for debugging, they'll be visible when running tests.
   std::cout << "Logs from your program will appear here!\n";
-
   // Uncomment this block to pass the first stage
-  //
+
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   int newserver_fd;
   std::vector<std::thread> threads;
@@ -291,6 +312,8 @@ int main(int argc, char **argv)
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(6379);
 
+  //! config arguments are below
+  Config config(argv[2], argv[4]);
   if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0)
   {
     std::cerr << "Failed to bind to port 6379\n";
@@ -317,7 +340,7 @@ int main(int argc, char **argv)
       continue;
     }
     std::cout << "Client connected\n";
-    std::thread t(clientHandle, newserver_fd); // Pass newserver_fd to the thread
+    std::thread t(clientHandle, newserver_fd, config); // Pass newserver_fd to the thread
     t.detach();
   }
   close(server_fd);
